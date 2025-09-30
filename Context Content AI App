@@ -1,0 +1,613 @@
+"""
+╔════════════════════════════════════════════════════════════════════╗
+║         REDDIT Q&A CONTENT GAP ANALYZER                            ║
+║         Streamlit Application for BrightonSEO                      ║
+╚════════════════════════════════════════════════════════════════════╝
+
+🎯 WHAT IT DOES:
+   Analyzes Reddit discussions to identify content gaps
+   for Google AI Overviews optimization
+
+📦 INSTALLATION:
+   pip install streamlit praw google-genai
+
+🚀 RUN:
+   streamlit run app.py
+"""
+
+import streamlit as st
+import praw
+from google import genai
+import json
+import time
+from datetime import datetime
+
+# ══════════════════════════════════════════════════════════════════
+# PAGE CONFIGURATION
+# ══════════════════════════════════════════════════════════════════
+
+st.set_page_config(
+    page_title="Reddit Q&A Content Gap Analyzer",
+    page_icon="🔍",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Custom CSS
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        font-weight: bold;
+        color: #1f77b4;
+        text-align: center;
+        padding: 1rem 0;
+    }
+    .sub-header {
+        font-size: 1.2rem;
+        color: #666;
+        text-align: center;
+        padding-bottom: 2rem;
+    }
+    .metric-card {
+        background-color: #f0f2f6;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin: 0.5rem 0;
+    }
+    .gap-critical {
+        background-color: #ffebee;
+        padding: 1rem;
+        border-left: 4px solid #f44336;
+        margin: 1rem 0;
+    }
+    .gap-partial {
+        background-color: #fff3e0;
+        padding: 1rem;
+        border-left: 4px solid #ff9800;
+        margin: 1rem 0;
+    }
+    .gap-complete {
+        background-color: #e8f5e9;
+        padding: 1rem;
+        border-left: 4px solid #4caf50;
+        margin: 1rem 0;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ══════════════════════════════════════════════════════════════════
+# SIDEBAR CONFIGURATION
+# ══════════════════════════════════════════════════════════════════
+
+with st.sidebar:
+    st.image("https://via.placeholder.com/300x100/1f77b4/ffffff?text=Reddit+Gap+Analyzer", use_container_width=True)
+    
+    st.markdown("## ⚙️ Configuration")
+    
+    st.markdown("### 🔐 API Credentials")
+    
+    with st.expander("📱 Reddit API", expanded=False):
+        reddit_client_id = st.text_input(
+            "Client ID",
+            type="password",
+            help="Get it from: https://www.reddit.com/prefs/apps"
+        )
+        reddit_client_secret = st.text_input(
+            "Client Secret",
+            type="password"
+        )
+        reddit_user_agent = st.text_input(
+            "User Agent",
+            value="RedditContentAnalyzer/1.0"
+        )
+    
+    with st.expander("🤖 Google Gemini API", expanded=False):
+        gemini_api_key = st.text_input(
+            "API Key",
+            type="password",
+            help="Get it from: https://makersuite.google.com/app/apikey"
+        )
+        gemini_model = st.selectbox(
+            "Model",
+            ["gemini-2.0-flash-exp", "gemini-1.5-flash", "gemini-1.5-pro"],
+            index=0
+        )
+    
+    st.markdown("### 🎛️ Analysis Settings")
+    
+    max_comments = st.slider(
+        "Max Comments to Analyze",
+        min_value=10,
+        max_value=100,
+        value=50,
+        step=10
+    )
+    
+    min_comment_length = st.slider(
+        "Min Comment Length (chars)",
+        min_value=10,
+        max_value=100,
+        value=20,
+        step=5
+    )
+    
+    num_questions = st.slider(
+        "Questions to Generate",
+        min_value=5,
+        max_value=20,
+        value=10,
+        step=1
+    )
+    
+    st.markdown("---")
+    st.markdown("### 📊 About")
+    st.info("""
+    **Reddit Q&A Content Gap Analyzer**
+    
+    Created for BrightonSEO AI Automations Showcase
+    
+    Identifies content gaps by analyzing real Reddit discussions.
+    """)
+
+# ══════════════════════════════════════════════════════════════════
+# MAIN FUNCTIONS
+# ══════════════════════════════════════════════════════════════════
+
+def extract_reddit_comments(url, client_id, client_secret, user_agent, max_comments, min_length):
+    """Extract comments from Reddit post"""
+    try:
+        reddit = praw.Reddit(
+            client_id=client_id,
+            client_secret=client_secret,
+            user_agent=user_agent
+        )
+        
+        submission = reddit.submission(url=url)
+        submission.comments.replace_more(limit=0)
+        
+        comments = []
+        for comment in submission.comments.list():
+            if hasattr(comment, 'body'):
+                body = comment.body.strip()
+                if len(body) >= min_length and body not in ['[deleted]', '[removed]']:
+                    comments.append(body)
+                    if len(comments) >= max_comments:
+                        break
+        
+        return comments, submission
+        
+    except Exception as e:
+        st.error(f"Error extracting comments: {str(e)}")
+        return [], None
+
+
+def generate_questions(comments, api_key, model, num_questions):
+    """Generate questions using Gemini AI"""
+    try:
+        client = genai.Client(api_key=api_key)
+        comments_text = "\n\n---\n\n".join(comments[:25])
+        
+        prompt = f"""You are an SEO content analyst specializing in understanding user queries.
+
+Analyze the following Reddit comments and identify the main QUESTIONS and CONCERNS users have about this topic.
+
+IMPORTANT:
+- Extract REAL questions users are asking or implying
+- Identify problems and concerns mentioned
+- Create clear questions that a Google user would ask
+- For each question, provide an expected answer based on the comment consensus
+
+COMMENTS:
+{comments_text}
+
+Generate {num_questions} relevant questions.
+
+Return ONLY valid JSON (no markdown):
+[
+  {{
+    "question": "Clear and specific question",
+    "expected_answer": "Answer based on comments and community consensus",
+    "context": "Brief context about why this question matters"
+  }}
+]"""
+
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt
+        )
+        
+        response_text = response.text.strip()
+        
+        # Remove markdown
+        if "```json" in response_text:
+            response_text = response_text.split("```json")[1].split("```")[0].strip()
+        elif "```" in response_text:
+            response_text = response_text.split("```")[1].split("```")[0].strip()
+        
+        questions = json.loads(response_text)
+        return questions
+        
+    except Exception as e:
+        st.error(f"Error generating questions: {str(e)}")
+        return []
+
+
+def analyze_content_coverage(article, questions, api_key, model):
+    """Analyze if article answers the questions"""
+    try:
+        client = genai.Client(api_key=api_key)
+        
+        results = {
+            "total_questions": len(questions),
+            "answered_completely": 0,
+            "answered_partially": 0,
+            "not_answered": 0,
+            "details": []
+        }
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for i, question in enumerate(questions):
+            status_text.text(f"Analyzing question {i+1}/{len(questions)}...")
+            progress_bar.progress((i + 1) / len(questions))
+            
+            article_limited = article[:8000]
+            
+            prompt = f"""Analyze if the ARTICLE answers the QUESTION.
+
+QUESTION: {question['question']}
+
+ARTICLE:
+{article_limited}
+
+Evaluate:
+1. Does the article answer the question completely? (COMPLETE/PARTIAL/NO)
+2. If COMPLETE or PARTIAL, briefly cite the relevant part
+3. If NO or PARTIAL, what is missing?
+4. Give a score from 0 to 10 for answer quality
+
+Return ONLY valid JSON (no markdown):
+{{
+  "status": "COMPLETE" or "PARTIAL" or "NO",
+  "citation": "Relevant excerpt or info in article",
+  "gap": "What is missing to answer better",
+  "score": 8
+}}"""
+
+            response = client.models.generate_content(
+                model=model,
+                contents=prompt
+            )
+            
+            response_text = response.text.strip()
+            if "```json" in response_text:
+                response_text = response_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in response_text:
+                response_text = response_text.split("```")[1].split("```")[0].strip()
+            
+            analysis = json.loads(response_text)
+            
+            if analysis['status'] == 'COMPLETE':
+                results['answered_completely'] += 1
+            elif analysis['status'] == 'PARTIAL':
+                results['answered_partially'] += 1
+            else:
+                results['not_answered'] += 1
+            
+            results['details'].append({
+                "question": question['question'],
+                "context": question.get('context', ''),
+                "status": analysis['status'],
+                "score": analysis.get('score', 0),
+                "citation": analysis.get('citation'),
+                "gap": analysis.get('gap')
+            })
+            
+            time.sleep(0.5)  # Rate limiting
+        
+        progress_bar.empty()
+        status_text.empty()
+        
+        return results
+        
+    except Exception as e:
+        st.error(f"Error analyzing coverage: {str(e)}")
+        return None
+
+# ══════════════════════════════════════════════════════════════════
+# MAIN APPLICATION
+# ══════════════════════════════════════════════════════════════════
+
+st.markdown('<p class="main-header">🔍 Reddit Q&A Content Gap Analyzer</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-header">Optimize your content for Google AI Overviews by understanding real user questions</p>', unsafe_allow_html=True)
+
+# Initialize session state
+if 'step' not in st.session_state:
+    st.session_state.step = 1
+if 'comments' not in st.session_state:
+    st.session_state.comments = []
+if 'questions' not in st.session_state:
+    st.session_state.questions = []
+if 'results' not in st.session_state:
+    st.session_state.results = None
+
+# ══════════════════════════════════════════════════════════════════
+# STEP 1: EXTRACT REDDIT COMMENTS
+# ══════════════════════════════════════════════════════════════════
+
+if st.session_state.step >= 1:
+    st.markdown("## 📱 Step 1: Extract Reddit Comments")
+    
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        reddit_url = st.text_input(
+            "Reddit Post URL",
+            placeholder="https://www.reddit.com/r/SEO/comments/example",
+            help="Paste the full URL of the Reddit post you want to analyze"
+        )
+    
+    with col2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        extract_button = st.button("🔍 Extract Comments", type="primary", use_container_width=True)
+    
+    if extract_button and reddit_url:
+        if not all([reddit_client_id, reddit_client_secret]):
+            st.error("⚠️ Please configure Reddit API credentials in the sidebar")
+        else:
+            with st.spinner("Extracting comments from Reddit..."):
+                comments, submission = extract_reddit_comments(
+                    reddit_url,
+                    reddit_client_id,
+                    reddit_client_secret,
+                    reddit_user_agent,
+                    max_comments,
+                    min_comment_length
+                )
+                
+                if comments:
+                    st.session_state.comments = comments
+                    st.session_state.submission = submission
+                    st.session_state.step = 2
+                    st.success(f"✅ Extracted {len(comments)} comments successfully!")
+                    st.rerun()
+
+# ══════════════════════════════════════════════════════════════════
+# STEP 2: DISPLAY COMMENTS & GENERATE QUESTIONS
+# ══════════════════════════════════════════════════════════════════
+
+if st.session_state.step >= 2 and st.session_state.comments:
+    st.markdown("---")
+    st.markdown("## 💬 Step 2: Reddit Discussion Summary")
+    
+    # Display post info
+    if hasattr(st.session_state, 'submission') and st.session_state.submission:
+        sub = st.session_state.submission
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Title", sub.title[:30] + "...")
+        col2.metric("Author", f"u/{sub.author}")
+        col3.metric("Upvotes", sub.score)
+        col4.metric("Comments", len(st.session_state.comments))
+    
+    # Show sample comments
+    with st.expander("📝 View Sample Comments", expanded=False):
+        for i, comment in enumerate(st.session_state.comments[:5], 1):
+            st.markdown(f"**Comment {i}:**")
+            st.text(comment[:300] + "..." if len(comment) > 300 else comment)
+            st.markdown("---")
+    
+    # Generate questions button
+    if st.button("🤖 Generate Questions with AI", type="primary", use_container_width=True):
+        if not gemini_api_key:
+            st.error("⚠️ Please configure Gemini API key in the sidebar")
+        else:
+            with st.spinner("Generating questions with Gemini AI..."):
+                questions = generate_questions(
+                    st.session_state.comments,
+                    gemini_api_key,
+                    gemini_model,
+                    num_questions
+                )
+                
+                if questions:
+                    st.session_state.questions = questions
+                    st.session_state.step = 3
+                    st.success(f"✅ Generated {len(questions)} questions!")
+                    st.rerun()
+
+# ══════════════════════════════════════════════════════════════════
+# STEP 3: DISPLAY QUESTIONS & UPLOAD ARTICLE
+# ══════════════════════════════════════════════════════════════════
+
+if st.session_state.step >= 3 and st.session_state.questions:
+    st.markdown("---")
+    st.markdown("## ❓ Step 3: Generated Questions")
+    
+    st.info(f"📊 **{len(st.session_state.questions)} questions** identified from Reddit discussion")
+    
+    with st.expander("📋 View All Questions", expanded=True):
+        for i, q in enumerate(st.session_state.questions, 1):
+            st.markdown(f"### Question {i}")
+            st.markdown(f"**❓ {q['question']}**")
+            st.markdown(f"*Expected Answer:* {q['expected_answer'][:200]}...")
+            st.markdown(f"*Context:* {q['context']}")
+            st.markdown("---")
+    
+    st.markdown("## 📄 Step 4: Upload Your Article")
+    
+    uploaded_file = st.file_uploader(
+        "Upload your article for analysis",
+        type=['txt', 'html', 'md'],
+        help="Upload the content you want to analyze against these questions"
+    )
+    
+    if uploaded_file:
+        article_content = uploaded_file.read().decode('utf-8', errors='ignore')
+        st.success(f"✅ Article loaded ({len(article_content)} characters)")
+        
+        if st.button("🔍 Analyze Content Coverage", type="primary", use_container_width=True):
+            if not gemini_api_key:
+                st.error("⚠️ Please configure Gemini API key in the sidebar")
+            else:
+                with st.spinner("Analyzing your content..."):
+                    results = analyze_content_coverage(
+                        article_content,
+                        st.session_state.questions,
+                        gemini_api_key,
+                        gemini_model
+                    )
+                    
+                    if results:
+                        st.session_state.results = results
+                        st.session_state.step = 4
+                        st.success("✅ Analysis complete!")
+                        st.rerun()
+
+# ══════════════════════════════════════════════════════════════════
+# STEP 4: DISPLAY RESULTS
+# ══════════════════════════════════════════════════════════════════
+
+if st.session_state.step >= 4 and st.session_state.results:
+    st.markdown("---")
+    st.markdown("## 📊 Analysis Results")
+    
+    results = st.session_state.results
+    total = results['total_questions']
+    complete = results['answered_completely']
+    partial = results['answered_partially']
+    not_answered = results['not_answered']
+    
+    # Calculate scores
+    coverage_score = ((complete * 10) + (partial * 5)) / total if total > 0 else 0
+    scores = [d['score'] for d in results['details'] if 'score' in d]
+    avg_score = sum(scores) / len(scores) if scores else 0
+    
+    # Display metrics
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("Total Questions", total)
+    col2.metric("✅ Complete", f"{complete} ({complete/total*100:.0f}%)")
+    col3.metric("⚠️ Partial", f"{partial} ({partial/total*100:.0f}%)")
+    col4.metric("❌ Missing", f"{not_answered} ({not_answered/total*100:.0f}%)")
+    col5.metric("Coverage Score", f"{coverage_score:.1f}/10")
+    
+    # Overall assessment
+    if coverage_score >= 8:
+        st.success("🎉 **EXCELLENT!** Your content covers user questions very well.")
+    elif coverage_score >= 5:
+        st.warning("👍 **GOOD!** But there's significant room for improvement.")
+    else:
+        st.error("⚠️ **ATTENTION!** Your content has critical gaps that need addressing.")
+    
+    # Priority Gaps
+    st.markdown("### 🔴 Priority Content Gaps")
+    
+    gaps = [d for d in results['details'] if d['status'] in ['NO', 'PARTIAL']]
+    
+    if gaps:
+        for i, gap in enumerate(gaps, 1):
+            status_class = "gap-partial" if gap['status'] == 'PARTIAL' else "gap-critical"
+            
+            st.markdown(f'<div class="{status_class}">', unsafe_allow_html=True)
+            st.markdown(f"**{i}. {gap['question']}**")
+            st.markdown(f"*Status:* {gap['status']} | *Score:* {gap.get('score', 0)}/10")
+            if gap.get('gap'):
+                st.markdown(f"💡 **What to add:** {gap['gap']}")
+            st.markdown('</div>', unsafe_allow_html=True)
+    else:
+        st.success("✅ No critical gaps found!")
+    
+    # Well-answered questions
+    answered = [d for d in results['details'] if d['status'] == 'COMPLETE']
+    
+    if answered:
+        with st.expander(f"✅ Well-Answered Questions ({len(answered)})", expanded=False):
+            for i, ans in enumerate(answered, 1):
+                st.markdown(f"**{i}. {ans['question']}**")
+                st.markdown(f"*Score:* {ans.get('score', 0)}/10")
+                if ans.get('citation'):
+                    st.markdown(f"*Excerpt:* {ans['citation'][:200]}...")
+                st.markdown("---")
+    
+    # Recommendations
+    st.markdown("### 💡 Recommendations for AI Overviews")
+    
+    st.info("""
+    **To improve your ranking in Google AI Overviews:**
+    
+    1. ✅ Add specific sections with H2/H3 headers using the identified questions
+    2. 📝 Provide direct answers (50-100 words) at the start of each section
+    3. 💬 Use natural language similar to the Reddit comments
+    4. ❓ Create an FAQ section with schema markup
+    5. 🔗 Add practical examples and real cases
+    6. 📊 Keep answers concise and scannable
+    7. ⚡ Use bullet points for key information
+    8. 🎯 Address user intent directly
+    """)
+    
+    # Download report
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        report_json = json.dumps(results, indent=2, ensure_ascii=False)
+        st.download_button(
+            label="📥 Download Full Report (JSON)",
+            data=report_json,
+            file_name=f"content_gap_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            mime="application/json",
+            use_container_width=True
+        )
+    
+    with col2:
+        # Generate text report
+        report_text = f"""REDDIT Q&A CONTENT GAP ANALYSIS REPORT
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+SUMMARY
+{'='*70}
+Total Questions: {total}
+Answered Completely: {complete} ({complete/total*100:.1f}%)
+Partially Answered: {partial} ({partial/total*100:.1f}%)
+Not Answered: {not_answered} ({not_answered/total*100:.1f}%)
+
+Coverage Score: {coverage_score:.1f}/10
+Average Score: {avg_score:.1f}/10
+
+PRIORITY GAPS
+{'='*70}
+"""
+        for i, gap in enumerate(gaps, 1):
+            report_text += f"\n{i}. {gap['question']}\n"
+            report_text += f"   Status: {gap['status']} | Score: {gap.get('score', 0)}/10\n"
+            if gap.get('gap'):
+                report_text += f"   What to add: {gap['gap']}\n"
+        
+        st.download_button(
+            label="📥 Download Report (TXT)",
+            data=report_text,
+            file_name=f"content_gap_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+            mime="text/plain",
+            use_container_width=True
+        )
+    
+    # Reset button
+    if st.button("🔄 Start New Analysis", use_container_width=True):
+        st.session_state.step = 1
+        st.session_state.comments = []
+        st.session_state.questions = []
+        st.session_state.results = None
+        st.rerun()
+
+# ══════════════════════════════════════════════════════════════════
+# FOOTER
+# ══════════════════════════════════════════════════════════════════
+
+st.markdown("---")
+st.markdown("""
+<div style='text-align: center; color: #666; padding: 2rem 0;'>
+    <p><strong>Reddit Q&A Content Gap Analyzer</strong></p>
+    <p>Created for BrightonSEO AI Automations Showcase 2025</p>
+    <p>Optimize your content for Google AI Overviews 🚀</p>
+</div>
+""", unsafe_allow_html=True)
